@@ -30,6 +30,9 @@ npm-debug.log*
 /platforms
 /plugins
 /www
+.env
+.env.*
+!.env.example
 
 # Playwright
 /test-results/

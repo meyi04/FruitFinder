@@ -1,0 +1,213 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isActiveUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (!('status' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status != 'suspended');
+    }
+
+    function isAdmin() {
+      return isActiveUser()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isSupplier(supplierId) {
+      return isActiveUser()
+        && request.auth.uid == supplierId
+        && getAfter(/databases/$(database)/documents/users/$(supplierId)).data.role == 'supplier';
+    }
+
+    function isBuyer() {
+      return isActiveUser()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'buyer';
+    }
+
+    function validFruitImage() {
+      return !('imageBase64' in request.resource.data)
+        || (request.resource.data.imageBase64 is string
+          && request.resource.data.imageBase64.size() <= 550000
+          && (request.resource.data.imageBase64 == ''
+            || request.resource.data.imageBase64.matches('^data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}$')));
+    }
+
+    function isConversationParticipant(conversationId) {
+      return isActiveUser()
+        && get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds.hasAny([request.auth.uid]);
+    }
+
+    function isConversationParticipantAfter(conversationId) {
+      return isActiveUser()
+        && getAfter(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds.hasAny([request.auth.uid]);
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId)
+        && request.resource.data.uid == userId
+        && request.resource.data.role in ['buyer', 'supplier'];
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name',
+          'phone',
+          'municipality',
+          'barangay'
+        ]);
+      allow update: if isAdmin()
+        && userId != request.auth.uid
+        && resource.data.role in ['buyer', 'supplier']
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name',
+          'phone',
+          'municipality',
+          'barangay',
+          'status'
+        ])
+        && (!('status' in request.resource.data) || request.resource.data.status in ['active', 'suspended']);
+      allow delete: if false;
+
+      match /favorites/{supplierId} {
+        allow read, delete: if isOwner(userId) && isActiveUser();
+        allow create, update: if isOwner(userId) && isActiveUser()
+          && request.resource.data.supplierId == supplierId;
+      }
+    }
+
+    match /suppliers/{supplierId} {
+      allow read: if isActiveUser();
+      allow create, update: if isSupplier(supplierId);
+      allow delete: if false;
+
+      match /fruits/{fruitId} {
+        allow read: if isActiveUser();
+        allow create, update: if isSupplier(supplierId) && validFruitImage();
+        allow delete: if isSupplier(supplierId);
+      }
+
+      match /reviews/{buyerId} {
+        allow read: if isActiveUser();
+        allow create: if isBuyer()
+          && request.auth.uid == buyerId
+          && request.resource.data.buyerId == buyerId
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5
+          && request.resource.data.comment is string;
+        allow update, delete: if false;
+      }
+    }
+
+    match /{path=**}/fruits/{fruitId} {
+      allow read: if isActiveUser();
+    }
+
+    match /{path=**}/reviews/{buyerId} {
+      allow read: if isActiveUser();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAdmin()
+        || (isActiveUser()
+          && (request.auth.uid == resource.data.buyerId || request.auth.uid == resource.data.supplierId));
+      allow create: if isBuyer()
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.supplierId != request.auth.uid
+        && exists(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId))
+        && get(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId)).data.isActive == true
+        && get(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId)).data.orderTypes.hasAny([request.resource.data.orderType])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.items is list
+        && request.resource.data.items.size() > 0
+        && request.resource.data.items.size() <= 30
+        && request.resource.data.total is number
+        && request.resource.data.total > 0
+        && request.resource.data.note is string
+        && request.resource.data.note.size() <= 500
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isActiveUser()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time
+        && (
+          (
+            request.auth.uid == resource.data.supplierId
+            && resource.data.status == 'pending'
+            && request.resource.data.status in ['accepted', 'declined']
+          )
+          || (
+            request.auth.uid == resource.data.supplierId
+            && resource.data.status == 'accepted'
+            && request.resource.data.status == 'completed'
+          )
+          || (
+            request.auth.uid == resource.data.buyerId
+            && resource.data.status == 'pending'
+            && request.resource.data.status == 'cancelled'
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      allow get: if isActiveUser()
+        && (resource == null || resource.data.participantIds.hasAny([request.auth.uid]));
+      allow list: if isActiveUser() && resource.data.participantIds.hasAny([request.auth.uid]);
+      allow create: if isBuyer()
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.supplierId != request.auth.uid
+        && request.resource.data.participantIds is list
+        && request.resource.data.participantIds.size() == 2
+        && request.resource.data.participantIds.hasAll([
+          request.resource.data.buyerId,
+          request.resource.data.supplierId
+        ])
+        && request.resource.data.buyerName == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.name
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.supplierId))
+        && get(/databases/$(database)/documents/users/$(request.resource.data.supplierId)).data.role == 'supplier'
+        && exists(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId))
+        && request.resource.data.supplierName == get(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId)).data.businessName
+        && request.resource.data.lastMessage is string
+        && request.resource.data.lastMessage.size() <= 2000;
+      allow update: if isActiveUser()
+        && resource.data.participantIds.hasAny([request.auth.uid])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'lastMessage',
+          'lastMessageAt',
+          'updatedAt'
+        ])
+        && request.resource.data.lastMessage is string
+        && request.resource.data.lastMessage.size() <= 2000
+        && request.resource.data.lastMessageAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isConversationParticipant(conversationId);
+        allow create: if isConversationParticipantAfter(conversationId)
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.senderName == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.name
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
