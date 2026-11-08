@@ -1,0 +1,7 @@
+{
+  "name": "FruitFinder",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "vue-vite"
+}
