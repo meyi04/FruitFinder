@@ -47,12 +47,20 @@
             </ion-button>
             <ion-button
               expand="block"
-              fill="outline"
-              :disabled="loading || Boolean(error) || Boolean(dateError)"
-              @click="downloadReport"
+              :disabled="loading || downloadingPdf || Boolean(error) || Boolean(dateError)"
+              @click="downloadPdfReport"
             >
               <ion-icon slot="start" :icon="downloadOutline" />
-              Download report (CSV)
+              {{ downloadingPdf ? 'Preparing PDF…' : 'Download branded PDF' }}
+            </ion-button>
+            <ion-button
+              expand="block"
+              fill="outline"
+              :disabled="loading || Boolean(error) || Boolean(dateError)"
+              @click="exportCsv"
+            >
+              <ion-icon slot="start" :icon="downloadOutline" />
+              Export spreadsheet (CSV)
             </ion-button>
           </div>
           <p class="range-caption">Showing {{ rangeCaption }}</p>
@@ -277,6 +285,7 @@ import {
   updateManagedUser,
 } from '@/services/adminService';
 import type { AccountStatus, FruitOrder, Supplier, UserProfile, UserRole } from '@/types';
+import { downloadBrandedReport } from '@/utils/brandedReportPdf';
 import { formatReportDate } from '@/utils/orderAnalytics';
 import { summarizeAdminData } from '@/utils/adminAnalytics';
 
@@ -285,6 +294,7 @@ const suppliers = ref<Supplier[]>([]);
 const orders = ref<FruitOrder[]>([]);
 const loading = ref(false);
 const saving = ref(false);
+const downloadingPdf = ref(false);
 const error = ref('');
 const search = ref('');
 const roleFilter = ref<'all' | 'buyer' | 'supplier'>('all');
@@ -419,7 +429,62 @@ function csvCell(value: string | number): string {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
-async function downloadReport(): Promise<void> {
+async function downloadPdfReport(): Promise<void> {
+  const report = analytics.value;
+  downloadingPdf.value = true;
+  try {
+    await downloadBrandedReport({
+      title: 'Marketplace administration report',
+      dateRange: rangeCaption.value,
+      filename: `fruitfinder-admin-report-${startDate.value}-to-${endDate.value}.pdf`,
+      metrics: [
+        { label: 'Completed sales', value: `PHP ${report.completedRevenue.toFixed(2)}` },
+        { label: 'Orders in period', value: String(report.orderCount) },
+        { label: 'Completed orders', value: String(report.completedCount) },
+        { label: 'Pending orders', value: String(report.pendingCount) },
+        { label: 'Community members', value: String(report.userCount) },
+        { label: 'Buyers', value: String(report.buyerCount) },
+        { label: 'Supplier accounts', value: String(report.supplierAccountCount) },
+        { label: 'Suspended accounts', value: String(report.suspendedCount) },
+        { label: 'Supplier stores', value: String(report.supplierCount) },
+        { label: 'Active supplier stores', value: String(report.activeSupplierCount) },
+        { label: 'Customers in period', value: String(report.customerCount) },
+      ],
+      sections: [
+        {
+          title: 'Daily sales',
+          columns: ['Date', 'Revenue (PHP)'],
+          rows: report.dailyRevenue.map((day) => [displayDate(day.date), day.revenue.toFixed(2)]),
+        },
+        {
+          title: 'Top suppliers',
+          columns: ['Supplier', 'Completed orders', 'Revenue (PHP)'],
+          rows: report.topSuppliers.map((supplier) => [supplier.name, supplier.orders, supplier.revenue.toFixed(2)]),
+        },
+        {
+          title: 'Orders in date range',
+          columns: ['Order ID', 'Date', 'Buyer', 'Supplier', 'Status', 'Order type', 'Total (PHP)'],
+          rows: orders.value.map((order) => [
+            order.id,
+            order.createdAt?.toDate().toLocaleDateString() || 'Date unavailable',
+            order.buyerName,
+            order.supplierName,
+            order.status,
+            order.orderType,
+            order.total.toFixed(2),
+          ]),
+        },
+      ],
+    });
+    await showToast('Branded FruitFinder PDF downloaded.', 'success');
+  } catch (cause) {
+    await showToast(errorMessage(cause, 'Unable to create the PDF report.'));
+  } finally {
+    downloadingPdf.value = false;
+  }
+}
+
+async function exportCsv(): Promise<void> {
   const report = analytics.value;
   const rows: Array<Array<string | number>> = [
     ['FruitFinder marketplace report'],

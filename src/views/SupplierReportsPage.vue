@@ -50,9 +50,13 @@
         <template v-else>
           <section class="download-section">
             <p>Your report for {{ rangeCaption }} is ready to save.</p>
-            <ion-button expand="block" @click="exportCsv">
+            <ion-button expand="block" :disabled="downloadingPdf" @click="downloadPdf">
               <ion-icon slot="start" :icon="downloadOutline" />
-              Download report (CSV)
+              {{ downloadingPdf ? 'Preparing PDF…' : 'Download branded PDF' }}
+            </ion-button>
+            <ion-button expand="block" fill="outline" @click="exportCsv">
+              <ion-icon slot="start" :icon="downloadOutline" />
+              Export spreadsheet (CSV)
             </ion-button>
           </section>
 
@@ -211,6 +215,7 @@ import { errorMessage, showToast } from '@/composables/useAppToast';
 import { listOrders } from '@/services/orderService';
 import { useAuthStore } from '@/stores/authStore';
 import type { FruitOrder, OrderStatus, OrderType } from '@/types';
+import { downloadBrandedReport } from '@/utils/brandedReportPdf';
 import { formatReportDate, summarizeOrders } from '@/utils/orderAnalytics';
 
 const authStore = useAuthStore();
@@ -219,6 +224,7 @@ const startDate = ref(formatReportDate(new Date(Date.now() - 29 * 24 * 60 * 60 *
 const selectedPreset = ref('30');
 const orders = ref<FruitOrder[]>([]);
 const loading = ref(true);
+const downloadingPdf = ref(false);
 const error = ref('');
 const dateError = computed(() => {
   if (!startDate.value || !endDate.value) return 'Choose both a start and end date.';
@@ -260,6 +266,56 @@ function setPreset(days: '7' | '30' | '90'): void {
 
 function csvCell(value: string | number): string {
   return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+async function downloadPdf(): Promise<void> {
+  downloadingPdf.value = true;
+  try {
+    await downloadBrandedReport({
+      title: 'Supplier sales report',
+      dateRange: rangeCaption.value,
+      filename: `fruitfinder-sales-report-${startDate.value}-to-${endDate.value}.pdf`,
+      metrics: [
+        { label: 'Completed sales', value: `PHP ${report.value.completedRevenue.toFixed(2)}` },
+        { label: 'Total orders', value: String(report.value.orderCount) },
+        { label: 'Completed orders', value: String(report.value.completedCount) },
+        { label: 'Pending orders', value: String(report.value.pendingCount) },
+        { label: 'Declined orders', value: String(report.value.declinedCount) },
+        { label: 'Average completed order', value: `PHP ${report.value.averageCompletedOrder.toFixed(2)}` },
+        { label: 'Customers', value: String(report.value.buyerCount) },
+      ],
+      sections: [
+        {
+          title: 'Daily sales',
+          columns: ['Date', 'Completed orders', 'Revenue (PHP)'],
+          rows: report.value.dailyRevenue.map((day) => [displayDate(day.date), day.orderCount, day.revenue.toFixed(2)]),
+        },
+        {
+          title: 'Popular fruits',
+          columns: ['Fruit', 'Quantity sold', 'Revenue (PHP)'],
+          rows: report.value.topFruits.map((fruit) => [fruit.name, fruit.quantity, fruit.revenue.toFixed(2)]),
+        },
+        {
+          title: 'Order history',
+          columns: ['Order ID', 'Date', 'Buyer', 'Status', 'Order type', 'Items', 'Total (PHP)'],
+          rows: orders.value.map((order) => [
+            order.id,
+            displayTimestamp(order.createdAt),
+            order.buyerName,
+            order.status,
+            typeLabel(order.orderType),
+            order.items.map((item) => `${item.quantity} x ${item.name}`).join('; '),
+            order.total.toFixed(2),
+          ]),
+        },
+      ],
+    });
+    await showToast('Branded FruitFinder PDF downloaded.', 'success');
+  } catch (cause) {
+    await showToast(errorMessage(cause, 'Unable to create the PDF report.'));
+  } finally {
+    downloadingPdf.value = false;
+  }
 }
 
 async function exportCsv(): Promise<void> {
